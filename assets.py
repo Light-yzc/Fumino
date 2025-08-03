@@ -4,7 +4,7 @@ from PySide6.QtWidgets import ( QVBoxLayout, QHBoxLayout,
 import requests
 import json
 from google import genai
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect, QParallelAnimationGroup, Property # 导入 QEvent
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect, QParallelAnimationGroup, Property, QThread # 导入 QEvent
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush # 导入 QMouseEvent
 class affinity_bar(QFrame):
     """半透明覆盖层"""
@@ -67,11 +67,6 @@ class affinity_bar(QFrame):
         affinity_layout.addWidget(self.affinity_bar)
         
         self.settings_layout.addLayout(affinity_layout)
-
-        switch_layout = QHBoxLayout()
-        switch_layout.setAlignment(Qt.AlignCenter)
-        switch_label = QLabel("好感度:")
-        switch_label.setStyleSheet("color: white; font-size: 16px;")
 
         close_button = QPushButton("关闭设置")
         close_button.setStyleSheet("""
@@ -163,9 +158,10 @@ class OverlayWidget(QFrame):
         super().__init__(parent)
         self.radio_btn_select = 'Gemini'
         self.model = None
+        self.model_fetcher = None
+
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        
         self.effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.effect)
         
@@ -174,7 +170,7 @@ class OverlayWidget(QFrame):
         
         # 增大面板高度以容纳新控件
         self.settings_panel = QFrame(self)
-        self.settings_panel.setFixedSize(450, 800) 
+        self.settings_panel.setFixedSize(500, 830) 
         with open('./config.json', 'r', encoding='utf-8') as f:
             self.config = json.load(f)
         self.settings_panel.setStyleSheet("""
@@ -190,16 +186,21 @@ class OverlayWidget(QFrame):
             QTextEdit {
                 background-color: rgba(50, 50, 50, 0);
                 border: none;
-                padding: 20px;
+                padding: 16px;
                 color: #e0e0e0;
                 font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
                 font-size: 20pt;
                 font-weight: bold;
             }
+            QTextEdit::placeholder {
+                color: #808080; /* 占位符文本颜色（通常比主文本浅） */
+                font-size: 16pt; /* 与主文本相同的字体大小 */
+                font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+                font-weight: bold;
+            }
             QTextEdit QScrollBar:vertical {
                 width: 0px; 
             }
-            /* 新增：设置 QRadioButton 的样式 */
             QRadioButton {
                 color: white;
                 font-size: 16px;
@@ -209,8 +210,19 @@ class OverlayWidget(QFrame):
                 width: 15px;
                 height: 15px;
             }
-            # QRadioButton::indicator:checked {
-            #     image: url(icons/radio_checked.png);
+            QPushButton {
+                background-color: #015195;
+                color: white;
+                border-radius: 10px;
+                padding: 10px 20px;
+                font-size: 16px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #043662;
+            }
+            QPushButton:pressed {
+                background-color: #00203C;
             }
         """)
         
@@ -269,6 +281,10 @@ class OverlayWidget(QFrame):
         self.settings_layout.addWidget(model_list_label)
 
         self.model_list_combo = QComboBox(self)
+        # self.model_list_combo.setFixedHeight(40)
+        self.model_list_combo.setStyleSheet("""
+            height: 40px; 
+            font-size: 16pt;""")
         self.settings_layout.addWidget(self.model_list_combo)
 
         title_label = QLabel("设置APIkey")
@@ -279,47 +295,13 @@ class OverlayWidget(QFrame):
         self.set_api.setPlaceholderText('请输入你的APIkey')
         self.settings_layout.addWidget(self.set_api)
         check_button = QPushButton("检查模型列表")
-        check_button.setStyleSheet("""
-            QPushButton {
-                background-color: #015195;
-                color: white;
-                border-radius: 10px;
-                padding: 10px 20px;
-                font-size: 16px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #043662;
-            }
-            QPushButton:pressed {
-                background-color: #00203C;
-            }
-        """)
-        check_button.setFixedSize(150, 40)
+        check_button.setFixedSize(170, 40)
         check_button.clicked.connect(lambda: self.handel_model_list(self.radio_btn_select, self.set_api.toPlainText().strip()))
         self.settings_layout.addWidget(check_button, 0, Qt.AlignCenter)
-
         ok_button = QPushButton("确定")
-        ok_button.setStyleSheet("""
-            QPushButton {
-                background-color: #015195;
-                color: white;
-                border-radius: 10px;
-                padding: 10px 20px;
-                font-size: 16px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #043662;
-            }
-            QPushButton:pressed {
-                background-color: #00203C;
-            }
-        """)
-        ok_button.setFixedSize(150, 40)
+        ok_button.setFixedSize(170, 40)
         ok_button.clicked.connect(lambda: self.handle_api_input_from_textedit(self.set_api.toPlainText().strip()))
         self.settings_layout.addWidget(ok_button, 0, Qt.AlignCenter)
-
         close_button = QPushButton("关闭设置")
         close_button.setStyleSheet("""
             QPushButton {
@@ -337,18 +319,14 @@ class OverlayWidget(QFrame):
                 background-color: #367c39;
             }
         """)
-        close_button.setFixedSize(150, 40)
+        close_button.setFixedSize(170, 40)
         close_button.clicked.connect(self.hide_with_animation)
         self.settings_layout.addWidget(close_button, 0, Qt.AlignCenter)
-        
         self.layout.addStretch()
         self.layout.addWidget(self.settings_panel, 0, Qt.AlignCenter)
         self.layout.addStretch()
-        
         self.setup_animations()
-        
         self.hide()
-    
 
     def add_models(self,models):
         self.model_list_combo.clear()
@@ -386,12 +364,28 @@ class OverlayWidget(QFrame):
             self.API_KEY_ect.emit(None, None, None, self.my_switch_button.isChecked())
             self.set_api.setPlaceholderText("API Key 不能为空！请重新输入。")
 
-    # def handle_rag(self, is_on):
-    #     if is_on:
-    #         self.use_rag.emit(True)
-    #     else:
-    #         self.use_rag.emit(False)
         
+    def handel_model_list(self, llm, api_key):
+        """启动模型获取线程"""
+        # 如果已有线程在运行，先终止
+        if self.model_fetcher and self.model_fetcher.isRunning():
+            self.model_fetcher.terminate()
+            self.model_fetcher.wait()
+        
+        # 创建新线程
+        self.model_fetcher = ModelFetcher(llm, api_key)
+        
+        # 连接信号
+        self.model_fetcher.finished.connect(self.add_models)
+        self.model_fetcher.error.connect(self.show_error)
+        
+        # 启动线程
+        self.model_fetcher.start()
+
+
+    def show_error(self, msg):
+        self.set_api.setPlaceholderText(f"API Key错误或者服务器未响应：{msg}")
+        self.set_api.clear()
     def setup_animations(self):
         """设置动画"""
         self.opacity_animation = QPropertyAnimation(self.effect, b"opacity")
@@ -439,16 +433,7 @@ class OverlayWidget(QFrame):
             x = (self.width() - panel_width) // 2
             y = (self.height() - panel_height) // 2
             self.settings_panel.move(x, y)
-    def handel_model_list(self, llm, api_key):
-        print('开始获取模型列表')
-        if llm == '质谱':
-            res = requests.get('https://open.bigmodel.cn/api/paas/v4/models',headers={'Authorization':f"Bearer {api_key}"})
-            data = res.json()
-            model_list = [item['id'] for item in data['data']]
-        else:
-            client = genai.Client(api_key=api_key)
-            model_list = [m.name for m in client.models.list()]
-        self.add_models(model_list)
+
 
 class SwitchButton(QPushButton):
     """一个带有平滑滑动动画的自定义开关按钮"""
@@ -520,3 +505,206 @@ class SwitchButton(QPushButton):
         painter.drawEllipse(knob_rect) # 绘制圆形的滑块
 
         painter.end()
+
+
+class ModelFetcher(QThread):
+    finished = Signal(list)  # 定义信号，用于传递结果
+    error = Signal(str)      # 定义信号，用于传递错误信息
+
+    def __init__(self, llm, api_key):
+        super().__init__()
+        self.llm = llm
+        self.api_key = api_key
+
+    def run(self):
+        """线程执行的主要逻辑"""
+        try:
+            print('开始获取模型列表')
+            if self.llm == '质谱':
+                res = requests.get(
+                    'https://open.bigmodel.cn/api/paas/v4/models',
+                    headers={'Authorization': f"Bearer {self.api_key}"},
+                    timeout=5
+                )
+                data = res.json()
+                model_list = [item['id'] for item in data['data']]
+            else:
+                client = genai.Client(api_key=self.api_key)
+                model_list = [m.name for m in client.models.list()]
+            
+            self.finished.emit(model_list)  # 发送成功信号
+        except Exception as e:
+            error_msg = f"获取模型列表失败: {str(e)}"
+            print(error_msg)
+            self.error.emit(error_msg)  # 发送错误信号
+
+
+class Dialog(QFrame):
+    """半透明覆盖层"""
+    instruct = Signal(str)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        
+        self.effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.effect)
+        
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.settings_panel = QFrame(self)
+        self.settings_panel.setFixedSize(320, 460)
+        
+        self.settings_panel.setStyleSheet("""
+            QFrame {
+                background-color: rgba(30, 30, 30, 170); /* 深灰色，带一点透明度 */
+                border-radius: 15px; /* 更大的圆角 */
+                padding: 20px; /* 内部填充 */
+            }
+
+        """)
+        
+        self.settings_layout = QVBoxLayout(self.settings_panel)
+        self.settings_layout.setAlignment(Qt.AlignCenter)
+        self.settings_layout.setSpacing(35)
+
+        dialog_label = QLabel("聊天记录设置")
+        dialog_label.setStyleSheet("background-color: rgba(0, 0, 0, 0); color: white; font-size: 16px;")
+        dialog_label.setFixedHeight(70)
+        self.settings_layout.addWidget(dialog_label, 0, Qt.AlignCenter)
+
+
+        btn_sytle = """
+        QPushButton {
+            background-color: rgba(0, 0, 0, 0.5); /* 半透明黑色 */
+            color: white;
+            border-radius: 10px; /* 圆角 */
+            padding: 10px 20px; /* 内边距 */
+            font-size: 16px;
+            border: none;
+        }
+        QPushButton:hover {
+            background-color: rgba(0, 0, 0, 0.7); /* 悬停时加深 */
+        }
+        QPushButton:pressed {
+            background-color: rgba(0, 0, 0, 0.9); /* 按下时更深 */
+        }
+        """
+        save_btn = QPushButton("保存聊天记录")
+        save_btn.setStyleSheet(btn_sytle)
+        save_btn.setFixedSize(180, 50)
+        save_btn.clicked.connect(self.save_dialog)
+        self.settings_layout.addWidget(save_btn, 0, Qt.AlignCenter)
+
+        load_btn = QPushButton("加载聊天记录")
+        load_btn.setStyleSheet(btn_sytle)
+        load_btn.setFixedSize(180, 50)
+        load_btn.clicked.connect(self.load_dialog)
+        self.settings_layout.addWidget(load_btn, 0, Qt.AlignCenter)
+
+        clear_btn = QPushButton("清空当前聊天记录")
+        clear_btn.setStyleSheet(btn_sytle)
+        clear_btn.setFixedSize(180, 50)
+        clear_btn.clicked.connect(self.clear_dialog)
+        self.settings_layout.addWidget(clear_btn, 0, Qt.AlignCenter)
+
+        self.info_label = QLabel("")
+        self.info_label.setStyleSheet("background-color: rgba(0, 0, 0, 0); color: red; font-size: 20px;")
+        self.info_label.setFixedHeight(70)
+        self.settings_layout.addWidget(self.info_label, 0, Qt.AlignCenter)
+
+        close_button = QPushButton("关闭设置")
+        close_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50; /* 绿色 */
+                color: white;
+                border-radius: 10px; /* 圆角 */
+                padding: 10px 20px; /* 内边距 */
+                font-size: 16px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #45a049; /* 悬停颜色 */
+            }
+            QPushButton:pressed {
+                background-color: #367c39; /* 按下颜色 */
+            }
+        """)
+        close_button.setFixedSize(150, 40)
+        close_button.clicked.connect(self.hide_with_animation)
+        self.settings_layout.addWidget(close_button, 0, Qt.AlignCenter)
+        
+        self.layout.addStretch()
+        self.layout.addWidget(self.settings_panel, 0, Qt.AlignCenter)
+        self.layout.addStretch()
+        
+        self.setup_animations()
+        self.hide()
+    
+    def clear_dialog(self):
+        self.instruct.emit('CLEAR')
+
+    def load_dialog(self):
+        self.instruct.emit('LOAD') 
+
+    def save_dialog(self):
+        self.instruct.emit('SAVE')
+
+    def setup_animations(self):
+        """设置动画"""
+        self.opacity_animation = QPropertyAnimation(self.effect, b"opacity")
+        self.opacity_animation.setDuration(300)
+        self.animation_group = QParallelAnimationGroup()
+        self.animation_group.addAnimation(self.opacity_animation)
+        self.animation_group.finished.connect(self.on_animation_finished)
+    
+    def handle_info(self, info):
+        self.info_label.setText(info)
+
+    def show_with_animation(self):
+        """显示覆盖层并播放动画"""
+        self.show()
+        self.raise_()
+        self.resizeEvent(None) # 触发一次 resizeEvent 来更新 settings_panel 的位置
+
+        full_rect = self.settings_panel.geometry()
+        center = full_rect.center()
+
+        start_rect = QRect(center.x() - 1, center.y() - 1, 2, 2) 
+        
+        self.opacity_animation.setStartValue(0.0)
+        self.opacity_animation.setEndValue(1.0)
+
+        self.animation_group.setDirection(QPropertyAnimation.Forward)
+        
+        self.animation_group.start()
+        
+    def hide_with_animation(self):
+        """隐藏覆盖层并播放淡出动画"""
+        
+        self.animation_group.setDirection(QPropertyAnimation.Backward)
+        
+        self.animation_group.start()
+        
+        self.info_label.clear()
+    
+    def on_animation_finished(self):
+        """动画完成时的处理"""
+        if self.animation_group.direction() == QPropertyAnimation.Backward:
+            self.hide()
+
+            
+    def resizeEvent(self, event):
+        """调整大小时确保覆盖层与父窗口一致"""
+        super().resizeEvent(event)
+        if self.parent():
+            self.setGeometry(self.parent().rect())
+            panel_width = self.settings_panel.width()
+            panel_height = self.settings_panel.height()
+            x = (self.width() - panel_width) // 2
+            y = (self.height() - panel_height) // 2
+            self.settings_panel.move(x, y)
+
+

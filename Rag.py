@@ -26,17 +26,17 @@ def start_retrieval(retriever, query):
 
 def init_db(url, key):
     try:
-        if os.path.exists("./chroma_db"):
-            print('发现向量数据库')
-            # embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-            embeddings = OpenAIEmbeddings(
+        embeddings = OpenAIEmbeddings(
             model="BAAI/bge-m3",
             openai_api_base=url,
             openai_api_key=key,
             chunk_size=64,
-    )
+        )
+        if os.path.exists("./chroma_db"):
+            print('发现向量数据库')
+            # embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
             vectorstore = Chroma(
-                embedding_function=embeddings,  # 加载时必须提供嵌入函数
+                embedding_function=embeddings,  
                 persist_directory="./chroma_db"
             )
         else:

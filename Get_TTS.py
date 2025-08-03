@@ -7,17 +7,19 @@ import librosa
 import sounddevice as sd
 import os
 from PySide6.QtCore import  Signal, QObject # 导入 QEvent
-
+from pathlib import Path
 class Audio_Worker(QObject):
     response_ready = Signal(str)
     error_occurred = Signal(str)
     def __init__(self, /, parent = None):
         super().__init__(parent)
         self._running = True  # 控制线程运行的标志
-        self.ref_path = os.path.dirname(os.path.abspath(__file__))  + r'.\ref\fumino0030.ogg_0000000000_0000176000.wav'
+        self.Base_path = Path(__file__).resolve().parent 
+        self.ref_path = self.Base_path / 'ref' / 'fumino0030.ogg_0000000000_0000176000.wav'
         self.res_emit = False
     def bin_to_mp3(self, data, file_name):
-        self.file_path = f'./voices/{file_name}.wav' 
+        # self.file_path = f'./voices/{file_name}.wav' 
+        self.file_path = self.Base_path / 'voices' / f'{file_name}.wav'
         if os.path.exists(self.file_path):
             os.remove(self.file_path)
             print(f"文件 {self.file_path} 已删除")

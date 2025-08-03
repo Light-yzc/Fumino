@@ -7,10 +7,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QPoint, QThread, Signal, QPropertyAnimation, QEasingCurve, QTimer, QCoreApplication, QEvent, QObject, QRect, QParallelAnimationGroup, Property # 导入 QEvent
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QMouseEvent# 导入 QMouseEvent
 from collections import deque
-from google import genai
-from zai import ZhipuAiClient
+# from google import genai
+# from google.genai.types import Content, Part
+# from zai import ZhipuAiClient
+from openai import OpenAI
 import re
 import os
+from pathlib import Path
 import json
 from config import L_Config
 from Rag import init_db, start_retrieval
@@ -18,18 +21,21 @@ import queue
 from PySide6.QtCore import QThread, Signal
 import time
 from Get_TTS import Audio_Worker, AudioState
-from assets import affinity_bar, OverlayWidget
+from assets import affinity_bar, OverlayWidget, Dialog
 
 class LLMWorker(QObject):
     response_ready = Signal(str)
     error_occurred = Signal(str)
-    send_tmp_msg = Signal(str)
+    send_tmp_msg = Signal(bool)
     trigger_audio_worker = Signal(str, str)
     info_audio_worker = Signal(bool)
     info_text = Signal(str)
+    info_dialog = Signal(str)
     def __init__(self, parent=None):
         self.api_key = ''
-        with open('./config.json', 'r', encoding='utf-8') as file:
+        self.BASE_DIR = Path(__file__).resolve().parent 
+        self.dialogue_DIR = self.BASE_DIR / 'saves' / 'dialogue.json'
+        with open(self.BASE_DIR / 'config.json', 'r', encoding='utf-8') as file:
             self.config = json.load(file)
         self.api_key = self.config['api_key']
         self.rag_url = self.config['embed_url']
@@ -42,7 +48,6 @@ class LLMWorker(QObject):
         self.llm = None
         self.rag_db = None
         self.model = None
-        self.chat = None
         self.use_rag = self.config['rag']
         if self.use_rag:
             self.set_rag()
@@ -50,43 +55,15 @@ class LLMWorker(QObject):
         print(f"当前模型：{self.llm} {self.model}")
         # 初始发送的提示
         self.prompt = L_Config.prompt
-        self.prefix = '''
-        模拟galgame式多条对话，你的每条对话应当用`[<<主角心理>>, <<环境>>, <<文乃说>>]`这两个来当前缀，每个前缀占据一行，*禁止*其他前缀。*禁止*不加前缀直接回复。
-        另外<<StatusBlock>>是状态栏项目，挂载在所有文本最后。
-        * 回答格式：
-            不用显示用户的初始输入文本，也就是不用输出<<主角说>>用户输入<<主角说>>
-            <<主角心理>>主要是对文乃的细腻心理观察。
-            <<环境>>是对故事发生周围环境的描写。
-            <<StatusBlock>>这一项加在所有文本最后
-            如果前缀是<<文乃说>>，你应当遵守下面三条规则：
-                1.先输出日文回答，并用[ja]和[/ja]包裹。
-                2.然后输出情绪用[emo]和[/emo]包裹，在这里面你 *只能* 输出 {smile，amazed， peace， embarrassed}这里面的一个情绪。
-                3.最后输出中文译文， 用[cn]和[/cn]包裹。
-        以下是一个示例：
-        <example>
-        <<环境>>文乃正一动不动的听着我讲话，像小狗一样在墙角<<环境>>
-        <<文乃说>>[ja]おっしゃる通りです[/ja][emo]peace[/emo][cn]您说得是呢[/cn]<<文乃说>>
-        <<主角心理>>文乃真是太可爱了啊<<主角心理>>
-        <<StatusBlock>>文乃好感度：48/100 地点: 夜晚后山<<StatusBlock>>
-        </example>
-        </Rule> 
-        <Character>
-        ---
-        以下是用户输入:
-            '''
-        # try:
-        #     with open('./txt.list', 'r', encoding='utf-8') as file:
-        #         self.prompt_txt = file.read()
-        # except FileNotFoundError:
-        #     self.prompt_txt = "默认对话风格补充。"
+        self.prefix = L_Config.prefix + '---\n以下是用户输入:\n'
         self.system_prompt = L_Config.system_prompt
-
-        self.client = ZhipuAiClient(api_key=self.api_key)
 
         self.conversation = [
         {"role": "system", "content": self.system_prompt},
         {"role": "assistant", "content": self.prompt}
         ]
+        
+
         # 使用队列来接收主线程发送的消息
         self.message_queue = queue.Queue()
         self._is_running = True # 控制线程循环的标志
@@ -103,28 +80,20 @@ class LLMWorker(QObject):
         线程的实际执行逻辑。此方法现在是一个循环，持续处理消息。
         """
         print("LLMWorker 线程启动，等待消息...")
-        while self._is_running:
+        while True:
+            message_to_process = self.message_queue.get() 
+            if message_to_process is None:
+                break
             try:
-                # 尝试从队列中获取消息，设置超时，以便可以检查 _is_running 标志
-                message_to_process = self.message_queue.get(timeout=0.1) 
-                
-                # 收到消息后，调用 LLM
-                try:
-                    llm_response_object = self.call_llm(message_to_process)
-                    print('ddondddddd')
-                    self.response_ready.emit(llm_response_object)
-                except Exception as e:
-                    self.error_occurred.emit(f"LLM调用发生错误: {e}")
-                finally:
-                    # 标记此任务已完成
-                    self.message_queue.task_done()
-
-            except queue.Empty:
-                # 队列为空，短暂休眠以避免忙等待，并允许检查 _is_running 标志
-                time.sleep(0.1) 
+                llm_response_object = self.call_llm(message_to_process)
+                # print('ddondddddd')
+                self.response_ready.emit(llm_response_object)
             except Exception as e:
-                # 捕获其他意外错误
-                self.error_occurred.emit(f"LLMWorker 自身发生意外错误: {e}")
+                self.error_occurred.emit(f"LLM调用发生错误: {e}")
+            finally:
+                # 标记此任务已完成
+                self.message_queue.task_done()
+
         print("LLMWorker 线程停止。")
 
     def stop(self):
@@ -140,10 +109,30 @@ class LLMWorker(QObject):
             else:
                 self.info_text.emit('加载完成')
 
-    # def _on_rag_loaded(self, retriever):
-    #     print('收到消息')
-    #     self.rag_db = retriever
-    #     self.info_text.emit('加载完成')  
+    def load_dialog(self):
+        try:
+            with open(self.dialogue_DIR, 'r', encoding='utf-8') as f:
+                self.conversation = json.load(f)
+            self.info_dialog.emit('加载完成')
+        except Exception as e:
+            print(f"对话记录加载错误{e}")
+            self.info_dialog.emit(f"对话记录加载错误：{e}")
+            
+    def save_dialog(self):
+        try:
+            with open(self.dialogue_DIR, 'w', encoding='utf-8') as f:
+                json.dump(self.conversation, f, ensure_ascii=False)
+            self.info_dialog.emit('保存完成')
+        except Exception as e:
+            self.info_dialog.emit(f"保存错误：{e}")
+
+    def clear_dialog(self):
+        self.conversation = [
+        {"role": "system", "content": self.system_prompt},
+        {"role": "assistant", "content": self.prompt}
+        ]
+        self.info_dialog.emit('清空完成')
+
 
     def change_llm_and_models(self, llm = None, model = None, api_key =None):
         if llm == model == api_key == None:
@@ -151,41 +140,40 @@ class LLMWorker(QObject):
             self.model = self.config['model']
             self.api_key = self.config['api_key']
             if self.llm == '质谱':
-                self.client = ZhipuAiClient(api_key=self.api_key)
+                self.client = OpenAI(api_key=self.api_key,
+                                    base_url="https://open.bigmodel.cn/api/paas/v4/")
             else:
-                self.client = genai.Client(api_key=self.api_key)
-                self.chat = self.client.chats.create(model=model)
-            print('//////////')
-            print(self.api_key)
-            print(self.model)
-            print(self.llm)
-            print(self.call_llm)
-            print(self.use_rag)
-            print(self.client)
-            print(self.chat)
-            print('//////////')
+                self.client = OpenAI(api_key=self.api_key,
+                                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+            # print('//////////')
+            # print(self.api_key)
+            # print(self.model)
+            # print(self.llm)
+            # print(self.call_llm)
+            # print(self.use_rag)
+            # print(self.client)
+            # print('//////////')
             return
         if api_key != None:
             self.api_key = api_key
             self.model = model
         if llm == '质谱':
             self.llm = llm
-            self.client = ZhipuAiClient(api_key=self.api_key)
+            self.client = OpenAI(
+                    api_key=self.api_key,
+                    base_url="https://open.bigmodel.cn/api/paas/v4/")
         elif llm == 'Gemini':
             self.llm = llm
-            self.client = genai.Client(api_key=self.api_key)
-            if model != '' and model!= None:
-                self.chat = self.client.chats.create(model=model)
-                self.process_message(self.system_prompt + self.prompt + '请严格遵守以上规则并进行角色扮演，没问题请回复‘明白，开始角色扮演’')
-        print('//////////')
-        print(self.api_key)
-        print(self.model)
-        print(self.llm)
-        print(self.call_llm)
-        print(self.use_rag)
-        print(self.client)
-        print(self.chat)
-        print('//////////')
+            self.client = OpenAI(api_key=self.api_key,
+                                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+        # print('//////////')
+        # print(self.api_key)
+        # print(self.model)
+        # print(self.llm)
+        # print(self.call_llm)
+        # print(self.use_rag)
+        # print(self.client)
+        # print('//////////')
 
     def call_llm(self, msg):
         """实际调用LLM服务的方法。"""
@@ -193,84 +181,69 @@ class LLMWorker(QObject):
         self.is_start = True
         self.voice_handle = None
         self.text_queue.clear()
-        # try:
-        if self.use_rag:
-            if not self.rag_db:
-                self.set_rag()
-            res = start_retrieval(self.rag_db, msg)
-            msg = f'''你的任务是：
-                        1. **学习并模仿**检索文本中的说话方式、语气和用词特色；
-                        2. **提取有效信息**（例如：用户需求、关键细节、上下文线索）；
-                        3. **生成连贯且符合角色设定**的回复，同时根据“user输入”完成具体互动。
+        try:
+            if self.use_rag:
+                if not self.rag_db:
+                    self.set_rag()
+                res = start_retrieval(self.rag_db, msg)
+                msg = f'''你的任务是：
+                            1. **学习并模仿**检索文本中的说话方式、语气和用词特色；
+                            2. **提取有效信息**（例如：用户需求、关键细节、上下文线索）；
+                            3. **生成连贯且符合角色设定**的回复，同时根据“user输入”完成具体互动。
 
-                        检索到的对话文本：
-                        ---
-                        {res}
-                        ---
+                            检索到的对话文本：
+                            ---
+                            {res}
+                            ---
 
-                        用户新输入：
-                        ---
-                        {msg}
-                        ---
+                            用户新输入：
+                            ---
+                            {msg}
+                            ---
 
-                        '''
-            print('rag_msg' + msg)
-        else:
-            self.rag_db = None
-        if self.llm == '质谱':
+                            '''
+            else:
+                self.rag_db = None
+
+            print(f'/////是否用rag:{self.use_rag}')
             self.conversation.append({"role": "user", "content": msg})
             response = self.client.chat.completions.create(
                     model=self.model,
                     messages=self.conversation,
-                    temperature=0.7,
-                    max_tokens=10000, 
+                    temperature=1.0,
+                    max_tokens=96000, 
                     stream=True
                 )
             print('开始流式')
             print(response)
-        else:
-            if self.chat:
-                msg = self.prefix + msg
-                response = self.chat.send_message_stream(msg)
-                print('开始gemini流式')
-                print(response)
-        for chunk in response:
-            if self.llm == '质谱':
+            for chunk in response:
                 if chunk.choices[0].delta.content:
                     print(chunk.choices[0].delta.content, end='')
                     full_response += chunk.choices[0].delta.content
                     no_change_res += chunk.choices[0].delta.content
-            else:
-                if chunk.text:
-                    print(chunk.text, end="")
-                    full_response += chunk.text
-                    no_change_res += chunk.text
-            pattern = r'<<[^>]+>>.*?<<[^>]+>>'
-            match = re.search(pattern, full_response)
-            if match:
-                # match.group(0) 是整个匹配到的字符串（例如：<<主角说>>...<<主角说>>）
-                full_match_str = match.group(0).strip()
-                full_response = full_response.replace(full_match_str, '', 1)
-                self.match_condition(full_match_str)
-        while len(full_response) != 0:
-            match = re.search(pattern, full_response)
-            if match:
-                full_match_str = match.group(0).strip()
-                full_response = full_response.replace(full_match_str, '', 1)
-                if self.match_condition(full_match_str):
+                pattern = r'<<[^>]+>>.*?<<[^>]+>>'
+                match = re.search(pattern, full_response)
+                if match:
+                    full_match_str = match.group(0).strip()
+                    full_response = full_response.replace(full_match_str, '', 1)
+                    self.match_condition(full_match_str)
+            while len(full_response) != 0:
+                match = re.search(pattern, full_response)
+                if match:
+                    full_match_str = match.group(0).strip()
+                    full_response = full_response.replace(full_match_str, '', 1)
+                    if self.match_condition(full_match_str):
+                        break
+                else:
                     break
-            else:
-                break
-        if self.llm == '质谱':
-        # 添加AI回复到对话历史
             self.conversation.append({"role": "assistant", "content": no_change_res})
-        print(f'完整文本：{no_change_res}')
-        self.is_start = None
-        return no_change_res
+            # print(f'完整文本：{no_change_res}')
+            self.is_start = None
+            return no_change_res
 
-        # except Exception as e:
-        #     print(f"发生错误: {e}")
-        #     return e
+        except Exception as e:
+            print(f"发生错误: {e}")
+            return e
         
     def match_condition(self, full_match_str):
         if self.text_queue != None and full_match_str.startswith('<<文乃说>>'):
@@ -285,18 +258,20 @@ class LLMWorker(QObject):
                 t = time.strftime("%Y%m%d_%H%M%S")
                 file_plus_reply = f'<<FILE>>{t}<<FILE>>' + full_match_str
                 self.text_queue.append(file_plus_reply)
+                # print(self.text_queue)
                 self.trigger_audio_worker.emit(ja, t)
                 ja = ''
                 return False
         elif self.text_queue != None and full_match_str != '':
             self.text_queue.append(full_match_str)
-            print(self.text_queue)
+            # print(self.text_queue)
             if self.is_start == True:
-                self.send_tmp_msg.emit('ok')
+                self.send_tmp_msg.emit(True)
                 print('非语音初始文本已经发送')
                 self.is_start = False
             return False
         return True
+    
     def extract_ja(self, text):
         pattern = r'\[ja\](.*?)\[\/ja\]'
         match = re.search(pattern, text, re.DOTALL)
@@ -315,11 +290,17 @@ class LLMChatApp(QWidget):
         super().__init__()
         self._height = 1600
         self._width = 900
-        self.bg_image_files = self.load_images_from_folder(r'.\img\image\bg')
-        self.char_image_files = self.load_images_from_folder(r'.\img\image\char')
-        self.emotion_image_files = self.load_images_from_folder(r'.\img\image\emotion')
+        self.BASE_DIR = Path(__file__).resolve().parent 
+        BG_IMG_DIR = self.BASE_DIR / "img" / "bg"
+        CHAR_DIR = self.BASE_DIR / "img" / "fumino_02l_resize" / "char"
+        EMO_DIR = self.BASE_DIR / "img" / "fumino_02l_resize" / "emotion"
+        self.bg_image_files = self.load_images_from_folder(BG_IMG_DIR)
+        self.char_image_files = self.load_images_from_folder(CHAR_DIR)
+        self.emotion_image_files = self.load_images_from_folder(EMO_DIR)
         self.setWindowTitle("Fumino")
-        self.setWindowIcon(QIcon('./img/icon.png'))
+        Icon_DIR = self.BASE_DIR / "img" / "icon.png"
+        self.setWindowIcon(QIcon(str(Icon_DIR)))
+        # self.setWindowIcon(QIcon('./img/icon.png' ))
         self.setGeometry(100, 100, self._height, self._width) # 增大窗口以适应图片
         self.setFixedSize(self.width(), self.height())
         self.is_llm_working = False # 跟踪 LLM 是否正在处理当前请求
@@ -328,17 +309,19 @@ class LLMChatApp(QWidget):
         self.text_fade_animation = None # 文本淡入动画
         self.floating_button_container = None
         self.floating_button_opacity_animation = None
-        self.current_bg_index = 0
-        self.current_char_index = 0
+        self.current_bg_index = 2
+        self.current_char_index = 1
         self.current_emotion_index = 0
         self.overlay = OverlayWidget(self)
         self.affinity = affinity_bar(self)
+        self.Dialog = Dialog(self)
+        self.Dialog.instruct.connect(self.handle_dialog)
         self.overlay.API_KEY_ect.connect(self.handle_api_key_from_overlay)
         # self.overlay.use_rag.connect(self.handle_rag)
         self.resizeEvent = self.on_resize
         self.set_affinity.connect(self.affinity.set_affinity)
         self.cn = ''
-        self.emo = 'smile'
+        self.emo = 'peace'
         self.text_queue = deque()
         # 用于保存按钮的原始QSS
         self.send_button_default_qss = """
@@ -417,6 +400,7 @@ class LLMChatApp(QWidget):
 
         # connect
         # self.llm_worker.send_model_list.connect(self.overlay.add_models)
+        self.llm_worker.info_dialog.connect(self.Dialog.handle_info)
         self.llm_worker.info_text.connect(self.show_dialog_text)
         self.llm_worker.trigger_audio_worker.connect(self.audio_worker.gengerate_voice)
         self.handel_model_list.connect(self.overlay.handel_model_list)
@@ -467,7 +451,8 @@ class LLMChatApp(QWidget):
         # 表情
         self.emotion_label = QLabel(self.image_stack_widget)
         self.emotion_label.setStyleSheet("background: transparent;")
-
+        self.emotion_opacity_effect = QGraphicsOpacityEffect(self.emotion_label)
+        self.emotion_label.setGraphicsEffect(self.emotion_opacity_effect)
         # 把容器加到主布局
         main_layout.addWidget(self.image_stack_widget)
 
@@ -478,7 +463,7 @@ class LLMChatApp(QWidget):
         main_layout.addWidget(self.image_stack_widget) # 将包含堆叠布局的容器添加到主布局
 
         # 初始加载图片
-        QTimer.singleShot(0, lambda: self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/image/emotion/{self.emo}.png"))
+        QTimer.singleShot(0, lambda: self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/fumino_02l_resize/emotion/{self.emo}.png"))
 
         # --- 对话显示区域（半透明覆盖在图片底部） ---
         self.chat_display = QTextEdit()
@@ -622,26 +607,23 @@ class LLMChatApp(QWidget):
         label.setPixmap(pixmap)
         label.setScaledContents(True)
 
-
     def show_dialog_text(self, text):
-        # 清空当前显示，只显示最新的对话
+        # 清空当前显示
         self.chat_display.clear()
-        n_row = max(1, len(text) // 40)
-        self.chat_display.setFixedHeight(96*n_row) # 固定对话框高度
-
+        
         # 应用淡入动画
         if self.text_fade_animation:
             self.text_fade_animation.stop()
         
-        # 创建一个透明度效果
+        # 创建透明度效果
         opacity_effect = QGraphicsOpacityEffect(self.chat_display)
         self.chat_display.setGraphicsEffect(opacity_effect)
 
         self.text_fade_animation = QPropertyAnimation(opacity_effect, b"opacity")
-        self.text_fade_animation.setDuration(500) # 动画时长 0.5 秒
-        self.text_fade_animation.setStartValue(0.0) # 从完全透明开始
-        self.text_fade_animation.setEndValue(1.0) # 到完全不透明
-        self.text_fade_animation.setEasingCurve(QEasingCurve.InQuad) # 缓入曲线
+        self.text_fade_animation.setDuration(500)
+        self.text_fade_animation.setStartValue(0.0)
+        self.text_fade_animation.setEndValue(1.0)
+        self.text_fade_animation.setEasingCurve(QEasingCurve.InQuad)
 
         html = f"""
         <div style='text-align: center; margin-top: 10px;'>
@@ -654,10 +636,25 @@ class LLMChatApp(QWidget):
             </span>
         </div>
         """
-                
+
         self.chat_display.insertHtml(html)
+        
+        QTimer.singleShot(0, self.adjust_chat_display_height)
+        
         self.text_fade_animation.start()
 
+    def adjust_chat_display_height(self):
+        doc_height = self.chat_display.document().size().height()
+        
+        total_height = int(doc_height) + 40
+        
+        min_height = 96
+        total_height = max(total_height, min_height)
+        
+        max_height = 300  
+        total_height = min(total_height, max_height)
+        
+        self.chat_display.setFixedHeight(total_height)
 
     def send_message(self):
         user_text = self.user_input.text().strip()
@@ -672,21 +669,7 @@ class LLMChatApp(QWidget):
 
         self.llm_worker.process_message(user_text)
 
-    # def update_chat_with_llm_response(self, response):
-    #     emo, cn, sta = self.extract_parts(response)
-    #     if sta != '':
-    #         self.set_affinity.emit(sta)
-    #     if not cn:
-    #         # self.show_dialog_text(response) 
-    #         self.send_button.setEnabled(True)
-    #         self.user_input.setFocus()
-    #     else:
-    #         self.cn = cn
-    #         self.emo = emo
-
     def handel_end(self):
-        # self.show_dialog_text(self.cn) # 显示 LLM 回复
-        # self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/image/emotion/{self.emo}.png")
         self.send_button.setEnabled(True)
         self.user_input.setFocus()
         opacity_animation = QPropertyAnimation(self.emotion_opacity_effect, b"opacity")
@@ -766,20 +749,16 @@ class LLMChatApp(QWidget):
         QCoreApplication.quit() 
 
     def eventFilter(self, obj, event):
-        # 修正：使用 QEvent.Type.MouseButtonDblClick 来比较事件类型
-        # 同时，在访问 QMouseEvent 特有属性前，检查事件类型
         if obj is self.image_stack_widget and event.type() == QEvent.Type.MouseButtonDblClick:
             if isinstance(event, QMouseEvent): # 确保是 QMouseEvent 类型
                 self.show_floating_button_row(event.globalPosition().toPoint()) # 调用新的函数
                 return True # 阻止事件继续传播
-        # 对于其他类型的事件，始终调用父类的 eventFilter
         return super().eventFilter(obj, event)
 
-    # 修正：新的函数名，用于显示一排浮动按钮
     def show_floating_button_row(self, global_pos: QPoint):
         if self.floating_button_container is None:
             self.floating_button_container = QWidget(self)
-            # 为容器设置一个半透明背景，使其看起来更像一个浮动面板
+            self.floating_button_container.setObjectName('floating_button_container')
             self.floating_button_container.setStyleSheet("""
                 QWidget {
                     background-color: rgba(30, 30, 30, 200); /* 深灰半透明 */
@@ -809,13 +788,11 @@ class LLMChatApp(QWidget):
             button_layout.setSpacing(10)
 
             # 定义按钮文本
-            button_texts = ["设置", "状态栏", "更换服装", "更换背景", "关闭"]
+            button_texts = ["设置", "状态栏", "聊天记录", "更换服装", "更换背景", "关闭"]
             for text in button_texts:
                 btn = QPushButton(text)
-                # 使用 lambda 表达式传递按钮文本到槽函数
                 btn.clicked.connect(lambda checked, t=text: self.on_floating_option_clicked(t))
                 button_layout.addWidget(btn)
-            # 为浮动按钮容器添加透明度效果
             self.floating_button_opacity_effect = QGraphicsOpacityEffect(self.floating_button_container)
             self.floating_button_container.setGraphicsEffect(self.floating_button_opacity_effect)
 
@@ -843,14 +820,19 @@ class LLMChatApp(QWidget):
             self.hide_floating_button_row()
         elif option_text == '状态栏':
             self.affinity.show_with_animation()
-        elif option_text == "更换背景":
-            self.current_bg_index = (self.current_bg_index + 1) % len(self.bg_image_files)
-            self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/image/emotion/{self.emo}.png")
-        elif option_text == "更换服装":
-            self.current_char_index = (self.current_char_index + 1) % len(self.char_image_files)
-            self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/image/emotion/{self.emo}.png")
         elif option_text == "设置":
             self.show_settings()
+        elif option_text == "聊天记录":
+            self.Dialog.show_with_animation()
+        elif option_text == "更换背景":
+            self.current_bg_index = (self.current_bg_index + 1) % len(self.bg_image_files)
+            emo_dir = self.BASE_DIR / 'img' / 'fumino_02l_resize' / 'emotion' / f'{self.emo}.png'
+            self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], emo_dir)
+        elif option_text == "更换服装":
+            self.current_char_index = (self.current_char_index + 1) % len(self.char_image_files)
+            emo_dir = self.BASE_DIR / 'img' / 'fumino_02l_resize' / 'emotion' / f'{self.emo}.png'
+            self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], emo_dir)
+
     # 新的函数，用于隐藏浮动按钮容器
     def hide_floating_button_row(self):
         if self.floating_button_container and self.floating_button_container.isVisible():
@@ -907,7 +889,7 @@ class LLMChatApp(QWidget):
         并接收到 API Key 作为参数。
         """
         print(f"主窗口收到来自 OverlayWidget 的 API Key: {llm, model, api_key, rag}")
-        if rag:
+        if rag != None:
             print('设置rag')
             self.llm_worker.use_rag = rag
             # if rag == True:
@@ -922,23 +904,14 @@ class LLMChatApp(QWidget):
             print(llm, api_key)
             self.handel_model_list.emit(llm, api_key)
             return
-            # print('开始获取模型列表')
-            # if llm == '质谱':
-            #     res = requests.get('https://open.bigmodel.cn/api/paas/v4/models',headers={'Authorization':f"Bearer {api_key}"})
-            #     data = res.json()
-            #     model_list = [item['id'] for item in data['data']]
-            # else:
-            #     client = genai.Client(api_key=api_key)
-            #     model_list = [m.name for m in client.models.list()]
-            # self.send_model_list.emit(model_list)
         try:
-            with open('./config.json', 'r', encoding='utf-8') as file:
+            with open(self.BASE_DIR / "config.json", 'r', encoding='utf-8') as file:
                 config = json.load(file)
             config['api_key'] = api_key 
             config['llm'] = llm
             config['model'] = model
             config['rag'] = self.llm_worker.use_rag
-            with open('./config.json', 'w', encoding='utf-8') as file:
+            with open(self.BASE_DIR / "config.json", 'w', encoding='utf-8') as file:
                 json.dump(config, file, ensure_ascii=False, indent=4)
         except Exception as e:
             print(f"写入 './config.json' 时发生错误: {e}")
@@ -947,12 +920,6 @@ class LLMChatApp(QWidget):
         except Exception as e:
             # 捕获其他可能的读取错误
             print(f"读取 ./config.json' 时发生错误: {e}")
-    # def handle_rag(self, state):
-    #     if state:
-    #         self.llm_worker.use_rag = True
-
-    #     else:
-    #         self.llm_worker.use_rag = False
 
     def extract_parts(self, text):
         # 使用正则表达式提取各部分
@@ -972,7 +939,11 @@ class LLMChatApp(QWidget):
 
         finally:
             return ja, emo, cn, sta_num
-        
+    
+    def loc_re(self, text):
+        loc_match = re.search(r'⁇(.*?)⁇', text, re.DOTALL)
+        return loc_match.group(1).strip() if loc_match else ""
+    
     def show_next_text(self):
         print(self.text_queue)
         if self.text_queue:
@@ -981,12 +952,21 @@ class LLMChatApp(QWidget):
             text_to_show = self.text_queue.popleft()
             print(f'开始显示文本：{text_to_show}')
             try:
+                loc = self.loc_re(text_to_show)
+                if loc:    
+                    # index = self.bg_image_files.index(loc)
+                    indices = [index for index, value in enumerate(self.bg_image_files) if loc in value]
+                    if indices:
+                        print(f'已经将背景切换为{loc}')
+                        text_to_show = text_to_show.replace(f'⁇{loc}⁇', '', 1)
+                        self.current_bg_index = indices[0]
+                        self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/fumino_02l_resize/emotion/{self.emo}.png")
                 file_match = file_match = re.search(r'<<FILE>>(.*?)<<FILE>>', text_to_show)
                 if file_match:
                         file_name = file_match.group(1)
                         ja, emo, cn, _ = self.extract_parts(text_to_show)
                         self.emo = emo
-                        self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/image/emotion/{self.emo}.png")
+                        self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/fumino_02l_resize/emotion/{self.emo}.png")
                         print(f'开始播放语音:{ja} 从文件：{file_name}')
                         file_name = f'./voices/{file_name}.wav' 
                         self.play_autdio.emit(file_name)
@@ -1006,11 +986,20 @@ class LLMChatApp(QWidget):
             # 队列为空，所有文本都已显示
             # self.show_dialog_text("故事到此结束。")
             return
+        
+    def handle_dialog(self, instruct):
+        print(f"已经接到指令{instruct}")
+        if instruct == 'CLEAR':
+            self.llm_worker.clear_dialog()
+        elif instruct == 'LOAD':
+            self.llm_worker.load_dialog()
+        elif instruct == 'SAVE':
+            self.llm_worker.save_dialog()
+        else:
+            print('未知指令')
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
-    # 全局样式美化，为窗口整体和默认字体设置
     app.setStyleSheet("""
         QWidget {
             background-color: #111111; /* 更深的背景色 */
@@ -1023,6 +1012,5 @@ if __name__ == "__main__":
             height: 0px;
         }
     """)
-
     chat_app = LLMChatApp()
     sys.exit(app.exec())
