@@ -31,6 +31,7 @@ class LLMWorker(QObject):
     info_audio_worker = Signal(bool)
     info_text = Signal(str)
     info_dialog = Signal(str)
+    char_and_bg = Signal(int, int, str)
     def __init__(self, parent=None):
         self.api_key = ''
         self.BASE_DIR = Path(__file__).resolve().parent 
@@ -103,27 +104,36 @@ class LLMWorker(QObject):
     def set_rag(self):
         if not self.rag_db:
             self.info_text.emit('正在加载rag')
+            print('正在加载rag')
             self.rag_db = init_db(self.rag_url, self.rag_key)
             if self.rag_db == '<<ERROR>>':
                 self.info_text.emit('Rag加载出错') 
+                print('Rag加载出错')
             else:
                 self.info_text.emit('加载完成')
+                print('加载完成')
 
     def load_dialog(self):
         try:
             with open(self.dialogue_DIR, 'r', encoding='utf-8') as f:
-                self.conversation = json.load(f)
+                dia_file = json.load(f)
+                self.conversation = dia_file['dialog']
+                bg = dia_file['bg']
+                dress = dia_file['dress']
+                emo = dia_file['emo']
+                self.char_and_bg.emit(int(dress), int(bg), emo)
             self.info_dialog.emit('加载完成')
         except Exception as e:
             print(f"对话记录加载错误{e}")
             self.info_dialog.emit(f"对话记录加载错误：{e}")
             
-    def save_dialog(self):
+    def save_dialog(self, current_char_index, current_bg_index, emo):
         try:
             with open(self.dialogue_DIR, 'w', encoding='utf-8') as f:
-                json.dump(self.conversation, f, ensure_ascii=False)
+                json.dump({"dialog":self.conversation, "dress":current_char_index, "bg":current_bg_index, 'emo':emo}, f, ensure_ascii=False)
             self.info_dialog.emit('保存完成')
         except Exception as e:
+            print(e)
             self.info_dialog.emit(f"保存错误：{e}")
 
     def clear_dialog(self):
@@ -145,14 +155,6 @@ class LLMWorker(QObject):
             else:
                 self.client = OpenAI(api_key=self.api_key,
                                     base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
-            # print('//////////')
-            # print(self.api_key)
-            # print(self.model)
-            # print(self.llm)
-            # print(self.call_llm)
-            # print(self.use_rag)
-            # print(self.client)
-            # print('//////////')
             return
         if api_key != None:
             self.api_key = api_key
@@ -166,15 +168,6 @@ class LLMWorker(QObject):
             self.llm = llm
             self.client = OpenAI(api_key=self.api_key,
                                     base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
-        # print('//////////')
-        # print(self.api_key)
-        # print(self.model)
-        # print(self.llm)
-        # print(self.call_llm)
-        # print(self.use_rag)
-        # print(self.client)
-        # print('//////////')
-
     def call_llm(self, msg):
         """实际调用LLM服务的方法。"""
         full_response, no_change_res = '', ''
@@ -406,9 +399,10 @@ class LLMChatApp(QWidget):
         self.handel_model_list.connect(self.overlay.handel_model_list)
         self.llm_worker.send_tmp_msg.connect(self.show_next_text)
         self.llm_worker.info_audio_worker.connect(self.audio_worker.set_res_emit)
+        self.llm_worker.char_and_bg.connect(self.handle_dress_and_bg)
         self.play_autdio.connect(self.play_audio_worker.audio_play_thread)
-        self.audio_worker.response_ready.connect(self.show_next_text)
-
+        self.audio_worker.response_ready.connect(self.put_audio_queue)
+        self.audio_queue = deque()
         if self.llm_worker.voice_handle == 'HANDLE_VOICE':
             print('初始信号已经发送')
             self.llm_worker.voice_handle = None
@@ -419,10 +413,14 @@ class LLMChatApp(QWidget):
         self.llm_thread.start()
         self.audio_thread.start()
         self.play_audio_thread.start()
-
-
         self.closeEvent = self.on_close_event
 
+        try:
+            self.handle_dialog('LOAD')
+            print('已经加载上传对话...')
+        except Exception as e:
+            print('加载上一次保存对话失败' + e)
+            
     def init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0) # 移除边距，让图片填充
@@ -516,7 +514,7 @@ class LLMChatApp(QWidget):
                 border: none;
                 color: white;
                 height: 26px; 
-                width: 
+                width: 38px;
             }
         """)
         self.send_button.clicked.connect(self.send_message)
@@ -529,6 +527,7 @@ class LLMChatApp(QWidget):
                 border: none;
                 color: white;
                 height: 26px; 
+                                    
             }
         """)
         self.next_btn.clicked.connect(self.show_next_text)
@@ -550,7 +549,9 @@ class LLMChatApp(QWidget):
                 height: 0px;
             }
         """)
-    
+
+
+            
     # 修改 load_or_create_image 函数为 load_layered_images，并更新其逻辑
     def load_layered_images(self, background_path, char_path, emotion_path):
         w = self.image_stack_widget.width()
@@ -946,6 +947,7 @@ class LLMChatApp(QWidget):
     
     def show_next_text(self):
         print(self.text_queue)
+        print('//////////////////////////\n ', self.audio_queue)
         if self.text_queue:
             self.next_btn.setEnabled(True)
             # 从队列左侧弹出一个元素
@@ -964,17 +966,26 @@ class LLMChatApp(QWidget):
                 file_match = file_match = re.search(r'<<FILE>>(.*?)<<FILE>>', text_to_show)
                 if file_match:
                         file_name = file_match.group(1)
-                        ja, emo, cn, _ = self.extract_parts(text_to_show)
-                        self.emo = emo
-                        self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/fumino_02l_resize/emotion/{self.emo}.png")
-                        print(f'开始播放语音:{ja} 从文件：{file_name}')
-                        file_name = f'./voices/{file_name}.wav' 
-                        self.play_autdio.emit(file_name)
-                        text_to_show = cn
+                        try:
+                            item = self.audio_queue.popleft()
+                            if file_name != item:
+                                self.next_btn.setEnabled(False)
+                                self.text_queue.appendleft(text_to_show)
+                            else:
+                                ja, emo, cn, _ = self.extract_parts(text_to_show)
+                                self.emo = emo
+                                self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/fumino_02l_resize/emotion/{self.emo}.png")
+                                print(f'开始播放语音:{ja} 从文件：{file_name}')
+                                file_name = f'./voices/{file_name}.wav' 
+                                self.play_autdio.emit(file_name)
+                                text_to_show = cn
+                        except IndexError:
+                            self.next_btn.setEnabled(False)
+                            self.text_queue.appendleft(text_to_show)
                 elif '<<StatusBlock>>' in text_to_show:
                     _, _, _, sta_num = self.extract_parts(text_to_show)
                     self.set_affinity.emit(sta_num)
-                    text_to_show = '「完」'
+                    text_to_show = f'「完」\n当前好感度: {sta_num}'
                     self.next_btn.setEnabled(False)
                 else:
                     text_to_show = re.sub(r'<<[^>]+>>', '', text_to_show, re.DOTALL)
@@ -984,6 +995,8 @@ class LLMChatApp(QWidget):
             
         else:
             # 队列为空，所有文本都已显示
+            self.audio_queue.clear()
+
             # self.show_dialog_text("故事到此结束。")
             return
         
@@ -994,9 +1007,21 @@ class LLMChatApp(QWidget):
         elif instruct == 'LOAD':
             self.llm_worker.load_dialog()
         elif instruct == 'SAVE':
-            self.llm_worker.save_dialog()
+            self.llm_worker.save_dialog(self.current_char_index, self.current_bg_index, self.emo)
         else:
             print('未知指令')
+
+    def handle_dress_and_bg(self, dress = None, bg = None, emo =None):
+        self.current_bg_index = bg
+        self.current_char_index = dress
+        self.current_emotion_index = emo
+        emo_dir = self.BASE_DIR / 'img' / 'fumino_02l_resize' / 'emotion' / f'{emo}.png'
+        self.load_layered_images(self.bg_image_files[bg], self.char_image_files[dress], emo_dir)
+    
+    def put_audio_queue(self, name):
+        print('++++++++++已经将' + name +'入队列++++++++++++++++')
+        self.audio_queue.append(name)
+        self.next_btn.setEnabled(True)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -1013,4 +1038,5 @@ if __name__ == "__main__":
         }
     """)
     chat_app = LLMChatApp()
+    chat_app.show()
     sys.exit(app.exec())

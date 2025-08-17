@@ -38,10 +38,10 @@ class Audio_Worker(QObject):
             response = requests.get(url=url)
             response.raise_for_status()  # 检查HTTP状态码（4xx/5xx会抛异常）
             self.bin_to_mp3(response.content, file_name)
-            if self.res_emit:
-                print('audio work已发送信息')
-                self.response_ready.emit(self.file_path)
-                self.res_emit = False
+            # if self.res_emit:
+            print('audio work已发送信息')
+            self.response_ready.emit(file_name)
+                # self.res_emit = False
         except Exception as e:
             self.error_occurred.emit('0')
             print(e)

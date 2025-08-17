@@ -578,19 +578,19 @@ class Dialog(QFrame):
 
         btn_sytle = """
         QPushButton {
-            background-color: rgba(0, 0, 0, 0.5); /* 半透明黑色 */
-            color: white;
-            border-radius: 10px; /* 圆角 */
-            padding: 10px 20px; /* 内边距 */
-            font-size: 16px;
-            border: none;
-        }
+                    background-color: #007bff;
+                    color: white;
+                    border: none;
+                    border-radius: 10px;
+                    padding: 8px 15px;
+                    font-size: 10pt;
+                    font-weight: bold;
+                }
         QPushButton:hover {
-            background-color: rgba(0, 0, 0, 0.7); /* 悬停时加深 */
-        }
+                    background-color: #0056b3;
+                }
         QPushButton:pressed {
-            background-color: rgba(0, 0, 0, 0.9); /* 按下时更深 */
-        }
+                    background-color: #004085;
         """
         save_btn = QPushButton("保存聊天记录")
         save_btn.setStyleSheet(btn_sytle)
@@ -611,20 +611,21 @@ class Dialog(QFrame):
         self.settings_layout.addWidget(clear_btn, 0, Qt.AlignCenter)
 
         self.info_label = QLabel("")
-        self.info_label.setStyleSheet("background-color: rgba(0, 0, 0, 0); color: red; font-size: 20px;")
+        self.info_label.setStyleSheet("background-color: rgba(0, 0, 0, 0); color: #b6c9b8; font-size: 20px;")
         self.info_label.setFixedHeight(70)
         self.settings_layout.addWidget(self.info_label, 0, Qt.AlignCenter)
 
         close_button = QPushButton("关闭设置")
         close_button.setStyleSheet("""
             QPushButton {
-                background-color: #4CAF50; /* 绿色 */
-                color: white;
-                border-radius: 10px; /* 圆角 */
-                padding: 10px 20px; /* 内边距 */
-                font-size: 16px;
-                border: none;
-            }
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 10px;
+                    padding: 8px 15px;
+                    font-size: 10pt;
+                    font-weight: bold;
+                }
             QPushButton:hover {
                 background-color: #45a049; /* 悬停颜色 */
             }
@@ -632,7 +633,7 @@ class Dialog(QFrame):
                 background-color: #367c39; /* 按下颜色 */
             }
         """)
-        close_button.setFixedSize(150, 40)
+        close_button.setFixedSize(180, 50)
         close_button.clicked.connect(self.hide_with_animation)
         self.settings_layout.addWidget(close_button, 0, Qt.AlignCenter)
         
