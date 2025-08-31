@@ -76,10 +76,14 @@ class AudioState(QObject):
         with self.lock:
             self.position = 0
             self.amplitude = 0.0
+            # 清除停止标志，为下一次播放做准备
             self.stop_event.clear()
-            # 如果流正在运行，停止它以准备下一次播放
-            if self._stream:
-                self._stream.stop()
+            # 如果流存在且正在活动，则停止它
+            if self._stream and self._stream.active:
+                try:
+                    self._stream.stop()
+                except sd.PortAudioError as e:
+                    print(f"重置时停止音频流失败: {e}")
 
     def get_stream(self):
         # 懒加载或确保流已初始化
@@ -158,4 +162,19 @@ class AudioState(QObject):
             print("音频播放完毕或停止事件触发。")
 
     def stop(self):
-        self._running = False
+        """
+        停止当前正在播放的语音。
+        该函数是线程安全的。
+        """
+        print("正在请求停止语音播放...")
+        
+        # 1. 设置事件，通知播放线程的 while 循环终止
+        self.stop_event.set()
+        
+        with self.lock:
+            if self._stream and self._stream.active:
+                try:
+                    self._stream.stop()
+                    print("音频流已成功停止。")
+                except sd.PortAudioError as e:
+                    print(f"尝试停止音频流时发生错误: {e}")

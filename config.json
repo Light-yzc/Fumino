@@ -1,7 +1,7 @@
 {
-    "api_key": ".",
-    "llm": "质谱",
-    "model": "glm-4.5",
+    "api_key": "",
+    "llm": "https://gemini.regenin.top",
+    "model": "models/gemini-2.5-flash",
     "rag": true,
     "embed_url": "https://api.siliconflow.cn/v1",
     "embed_key": "sk-"

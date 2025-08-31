@@ -1,9 +1,11 @@
 from PySide6.QtWidgets import ( QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton,QLabel, QGraphicsOpacityEffect, QFrame, QProgressBar, QRadioButton, QButtonGroup, QComboBox
 )
+import os
 import requests
 import json
 from google import genai
+from openai import OpenAI
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect, QParallelAnimationGroup, Property, QThread # 导入 QEvent
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush # 导入 QMouseEvent
 class affinity_bar(QFrame):
@@ -152,7 +154,6 @@ class affinity_bar(QFrame):
 class OverlayWidget(QFrame):
     """半透明覆盖层"""
     API_KEY_ect = Signal(str, str, str, bool)
-    # use_rag = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -170,7 +171,7 @@ class OverlayWidget(QFrame):
         
         # 增大面板高度以容纳新控件
         self.settings_panel = QFrame(self)
-        self.settings_panel.setFixedSize(500, 830) 
+        self.settings_panel.setFixedSize(500, 890) 
         with open('./config.json', 'r', encoding='utf-8') as f:
             self.config = json.load(f)
         self.settings_panel.setStyleSheet("""
@@ -259,17 +260,19 @@ class OverlayWidget(QFrame):
 
         self.option1_btn = QRadioButton("Gemini")
         self.option2_btn = QRadioButton("质谱")
-        # self.option3_btn = QRadioButton("Option 3")
-        
+        self.option3_btn = QRadioButton("自定义API端点")
+        # self.option3_btn.clicked.connect(self.toggle_api_url_input)
+        # self.settings_layout.addWidget(self.custom_api_button, 0, Qt.AlignCenter)
+        # --- NEW WIDGETS END ---
         self.option1_btn.setChecked(True)
         
         self.model_button_group.addButton(self.option1_btn, 1)
         self.model_button_group.addButton(self.option2_btn, 2)
-        # self.model_button_group.addButton(self.option3_btn, 3)
+        self.model_button_group.addButton(self.option3_btn, 3)
 
         options_layout.addWidget(self.option1_btn)
         options_layout.addWidget(self.option2_btn)
-        # options_layout.addWidget(self.option3_btn)
+        options_layout.addWidget(self.option3_btn)
         
         self.settings_layout.addLayout(options_layout)
         
@@ -290,7 +293,10 @@ class OverlayWidget(QFrame):
         title_label = QLabel("设置APIkey")
         title_label.setAlignment(Qt.AlignCenter)
         self.settings_layout.addWidget(title_label)
-        
+        self.api_url_input = QTextEdit()
+        self.api_url_input.setPlaceholderText('请输入你的API URL')
+        self.api_url_input.hide()  # 初始状态下隐藏
+        self.settings_layout.addWidget(self.api_url_input)
         self.set_api = QTextEdit()
         self.set_api.setPlaceholderText('请输入你的APIkey')
         self.settings_layout.addWidget(self.set_api)
@@ -336,6 +342,10 @@ class OverlayWidget(QFrame):
         """处理圆点选择事件"""
         selected_text = button.text()
         print(f"选择了: {selected_text}")
+        if selected_text == '自定义API端点':
+            self.api_url_input.show()
+        else:
+            self.api_url_input.hide()
         self.radio_btn_select = selected_text
         
     def handle_model_list_and_rag(self, llm, model, key):
@@ -353,6 +363,8 @@ class OverlayWidget(QFrame):
         """
         api_key = api_key_text.strip()
         llm = self.radio_btn_select
+        if llm == '自定义API端点':
+            llm = f'https://{self.api_url_input.toPlainText().strip()}'
         model = self.model_list_combo.currentText()
         if api_key:
             self.API_KEY_ect.emit(llm, model, api_key, self.my_switch_button.isChecked())
@@ -367,19 +379,18 @@ class OverlayWidget(QFrame):
         
     def handel_model_list(self, llm, api_key):
         """启动模型获取线程"""
-        # 如果已有线程在运行，先终止
         if self.model_fetcher and self.model_fetcher.isRunning():
             self.model_fetcher.terminate()
             self.model_fetcher.wait()
+        if llm == '自定义API端点':
+            base_url = self.api_url_input.toPlainText().strip()
+        else:
+            base_url = None
+        self.model_fetcher = ModelFetcher(llm, api_key, base_url)
         
-        # 创建新线程
-        self.model_fetcher = ModelFetcher(llm, api_key)
-        
-        # 连接信号
         self.model_fetcher.finished.connect(self.add_models)
         self.model_fetcher.error.connect(self.show_error)
         
-        # 启动线程
         self.model_fetcher.start()
 
 
@@ -511,11 +522,11 @@ class ModelFetcher(QThread):
     finished = Signal(list)  # 定义信号，用于传递结果
     error = Signal(str)      # 定义信号，用于传递错误信息
 
-    def __init__(self, llm, api_key):
+    def __init__(self, llm, api_key, base_url = None):
         super().__init__()
         self.llm = llm
         self.api_key = api_key
-
+        self.base_url = base_url
     def run(self):
         """线程执行的主要逻辑"""
         try:
@@ -528,10 +539,17 @@ class ModelFetcher(QThread):
                 )
                 data = res.json()
                 model_list = [item['id'] for item in data['data']]
-            else:
+            elif self.llm == 'Gemini':
                 client = genai.Client(api_key=self.api_key)
                 model_list = [m.name for m in client.models.list()]
             
+            else:
+                if not self.base_url.startswith('https'):
+                    self.base_url = f'https://{self.base_url}'
+                    print(self.base_url)
+                client = OpenAI(base_url=self.base_url, api_key= self.api_key)
+                model_list = [model.id for model in client.models.list()]
+
             self.finished.emit(model_list)  # 发送成功信号
         except Exception as e:
             error_msg = f"获取模型列表失败: {str(e)}"

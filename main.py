@@ -7,9 +7,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QPoint, QThread, Signal, QPropertyAnimation, QEasingCurve, QTimer, QCoreApplication, QEvent, QObject, QRect, QParallelAnimationGroup, Property # 导入 QEvent
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QMouseEvent# 导入 QMouseEvent
 from collections import deque
-# from google import genai
-# from google.genai.types import Content, Part
-# from zai import ZhipuAiClient
 from openai import OpenAI
 import re
 import os
@@ -149,94 +146,101 @@ class LLMWorker(QObject):
             self.llm = self.config['llm']
             self.model = self.config['model']
             self.api_key = self.config['api_key']
-            if self.llm == '质谱':
-                self.client = OpenAI(api_key=self.api_key,
-                                    base_url="https://open.bigmodel.cn/api/paas/v4/")
-            else:
-                self.client = OpenAI(api_key=self.api_key,
-                                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
-            return
-        if api_key != None:
-            self.api_key = api_key
+        else:
+            self.llm = llm
             self.model = model
-        if llm == '质谱':
-            self.llm = llm
-            self.client = OpenAI(
-                    api_key=self.api_key,
-                    base_url="https://open.bigmodel.cn/api/paas/v4/")
-        elif llm == 'Gemini':
-            self.llm = llm
+            self.api_key = api_key
+        if self.llm == '质谱':
             self.client = OpenAI(api_key=self.api_key,
-                                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+                                base_url="https://open.bigmodel.cn/api/paas/v4/")
+        elif self.llm == 'Gemini':
+            self.client = OpenAI(api_key=self.api_key,
+                                base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+        elif self.llm.startswith('https'):
+            self.client = OpenAI(api_key=self.api_key,
+                                base_url=self.llm)
+        # return
+        # if api_key != None:
+        #     self.api_key = api_key
+        #     self.model = model
+        # if llm == '质谱':
+        #     self.llm = llm
+        #     self.client = OpenAI(
+        #             api_key=self.api_key,
+        #             base_url="https://open.bigmodel.cn/api/paas/v4/")
+        # elif llm == 'Gemini':
+        #     self.llm = llm
+        #     self.client = OpenAI(api_key=self.api_key,
+        #                             base_url="https://generativelanguage.googleapis.com/v1beta/openai/")
     def call_llm(self, msg):
         """实际调用LLM服务的方法。"""
         full_response, no_change_res = '', ''
         self.is_start = True
         self.voice_handle = None
         self.text_queue.clear()
-        try:
-            if self.use_rag:
-                if not self.rag_db:
-                    self.set_rag()
-                res = start_retrieval(self.rag_db, msg)
-                msg = f'''你的任务是：
-                            1. **学习并模仿**检索文本中的说话方式、语气和用词特色；
-                            2. **提取有效信息**（例如：用户需求、关键细节、上下文线索）；
-                            3. **生成连贯且符合角色设定**的回复，同时根据“user输入”完成具体互动。
+        # try:
+        if self.use_rag:
+            if not self.rag_db:
+                self.set_rag()
+            res = start_retrieval(self.rag_db, msg)
+            msg = f'''你的任务是：
+                        1. **学习并模仿**检索文本中的说话方式、语气和用词特色；
+                        2. **提取有效信息**（例如：用户需求、关键细节、上下文线索）；
+                        3. **生成连贯且符合角色设定**的回复，同时根据“user输入”完成具体互动。
 
-                            检索到的对话文本：
-                            ---
-                            {res}
-                            ---
+                        检索到的对话文本：
+                        ---
+                        {res}
+                        ---
 
-                            用户新输入：
-                            ---
-                            {msg}
-                            ---
+                        用户新输入：
+                        ---
+                        {msg}
+                        ---
 
-                            '''
-            else:
-                self.rag_db = None
+                        '''
+        else:
+            self.rag_db = None
 
-            print(f'/////是否用rag:{self.use_rag}')
-            self.conversation.append({"role": "user", "content": msg})
-            response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=self.conversation,
-                    temperature=1.0,
-                    max_tokens=96000, 
-                    stream=True
-                )
-            print('开始流式')
-            print(response)
-            for chunk in response:
-                if chunk.choices[0].delta.content:
-                    print(chunk.choices[0].delta.content, end='')
-                    full_response += chunk.choices[0].delta.content
-                    no_change_res += chunk.choices[0].delta.content
-                pattern = r'<<[^>]+>>.*?<<[^>]+>>'
-                match = re.search(pattern, full_response)
-                if match:
-                    full_match_str = match.group(0).strip()
-                    full_response = full_response.replace(full_match_str, '', 1)
-                    self.match_condition(full_match_str)
-            while len(full_response) != 0:
-                match = re.search(pattern, full_response)
-                if match:
-                    full_match_str = match.group(0).strip()
-                    full_response = full_response.replace(full_match_str, '', 1)
-                    if self.match_condition(full_match_str):
-                        break
-                else:
+        print(f'/////是否用rag:{self.use_rag}')
+        self.conversation.append({"role": "user", "content": msg})
+        response = self.client.chat.completions.create(
+                model=self.model,
+                messages=self.conversation,
+                temperature=1.0,
+                max_tokens=96000, 
+                stream=True
+            )
+        print('开始流式')
+        print(response)
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                print(chunk.choices[0].delta.content, end='')
+                full_response += chunk.choices[0].delta.content
+                no_change_res += chunk.choices[0].delta.content
+            pattern = r'<<[^>]+>>.*?<<[^>]+>>'
+            match = re.search(pattern, full_response)
+            if match:
+                full_match_str = match.group(0).strip()
+                full_response = full_response.replace(full_match_str, '', 1)
+                self.match_condition(full_match_str)
+        while len(full_response) != 0:
+            match = re.search(pattern, full_response)
+            if match:
+                full_match_str = match.group(0).strip()
+                full_response = full_response.replace(full_match_str, '', 1)
+                if self.match_condition(full_match_str):
                     break
-            self.conversation.append({"role": "assistant", "content": no_change_res})
-            # print(f'完整文本：{no_change_res}')
-            self.is_start = None
-            return no_change_res
+            else:
+                break
+        self.conversation.append({"role": "assistant", "content": no_change_res})
+        # print(f'完整文本：{no_change_res}')
+        self.is_start = None
+        return no_change_res
 
-        except Exception as e:
-            print(f"发生错误: {e}")
-            return e
+        # except Exception as e:
+        #     print(f"发生错误: {e}")
+        #     return e
         
     def match_condition(self, full_match_str):
         if self.text_queue != None and full_match_str.startswith('<<文乃说>>'):
@@ -515,6 +519,7 @@ class LLMChatApp(QWidget):
                 color: white;
                 height: 26px; 
                 width: 38px;
+                margin: 2px;
             }
         """)
         self.send_button.clicked.connect(self.send_message)
@@ -527,6 +532,7 @@ class LLMChatApp(QWidget):
                 border: none;
                 color: white;
                 height: 26px; 
+                margin: 2px;
                                     
             }
         """)
@@ -578,7 +584,8 @@ class LLMChatApp(QWidget):
             # 计算居中底部坐标
             cur_x = (w - ew) // 2
             parent_height = self.char_label.parent().height()
-            cur_y = parent_height-eh+80
+            # cur_y = parent_height-eh+80
+            cur_y = parent_height-eh+380
             self.char_label.setGeometry(cur_x, cur_y, ew, eh)
 
         emo = QPixmap(emotion_path)
@@ -971,11 +978,13 @@ class LLMChatApp(QWidget):
                             if file_name != item:
                                 self.next_btn.setEnabled(False)
                                 self.text_queue.appendleft(text_to_show)
+                                return
                             else:
                                 ja, emo, cn, _ = self.extract_parts(text_to_show)
                                 self.emo = emo
                                 self.load_layered_images(self.bg_image_files[self.current_bg_index], self.char_image_files[self.current_char_index], f"./img/fumino_02l_resize/emotion/{self.emo}.png")
                                 print(f'开始播放语音:{ja} 从文件：{file_name}')
+                                self.play_audio_worker.stop()
                                 file_name = f'./voices/{file_name}.wav' 
                                 self.play_autdio.emit(file_name)
                                 text_to_show = cn
